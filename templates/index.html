@@ -1,0 +1,223 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <title>Waste Classifier</title>
+    <style>
+      body {
+        font-family: Arial, sans-serif;
+        max-width: 800px;
+        margin: 0 auto;
+        padding: 20px;
+        text-align: center;
+      }
+      #video {
+        background: #000;
+        width: 640px;
+        height: 480px;
+        margin: 10px auto;
+        display: block;
+      }
+      #result {
+        font-size: 1.5em;
+        margin: 15px 0;
+        min-height: 1.5em;
+      }
+      #status {
+        color: #666;
+        font-style: italic;
+      }
+      #pauseInfo {
+        background: #fff3cd;
+        padding: 10px;
+        border-radius: 5px;
+        margin: 10px 0;
+        display: none;
+      }
+      .organic {
+        color: green;
+        font-weight: bold;
+      }
+      .non-organic {
+        color: red;
+      }
+      .paused {
+        color: orange;
+        font-weight: bold;
+      }
+      button {
+        padding: 10px 20px;
+        font-size: 1em;
+        margin: 10px;
+        cursor: pointer;
+      }
+    </style>
+  </head>
+  <body>
+    <h1>Waste Classification</h1>
+    <video id="video" width="640" height="480" autoplay playsinline></video>
+    <div id="result">Waiting for predictions...</div>
+    <div id="pauseInfo">
+      <strong>System Paused:</strong> Organic detected. Resuming in
+      <span id="pauseTime">7</span> seconds
+    </div>
+    <div id="status">Status: Loading...</div>
+    <button id="startBtn">Start Detection</button>
+
+    <script>
+      const video = document.getElementById("video");
+      const result = document.getElementById("result");
+      const status = document.getElementById("status");
+      const pauseInfo = document.getElementById("pauseInfo");
+      const pauseTime = document.getElementById("pauseTime");
+      const startBtn = document.getElementById("startBtn");
+
+      let ws;
+      let stream;
+      let detectionInterval;
+      let isDetecting = false;
+      let pauseInterval;
+
+      // Canvas for image processing
+      const canvas = document.createElement("canvas");
+      canvas.width = 224;
+      canvas.height = 224;
+      const ctx = canvas.getContext("2d");
+
+      function connectWebSocket() {
+        status.textContent = "Status: Connecting...";
+        ws = new WebSocket(`ws://${window.location.hostname}:8080/ws`);
+
+        ws.onopen = () => {
+          status.textContent = "Status: Connected";
+          console.log("WebSocket connected");
+        };
+
+        ws.onerror = (error) => {
+          status.textContent = "Status: Connection error";
+          console.error("WebSocket error:", error);
+        };
+
+        ws.onclose = () => {
+          status.textContent = "Status: Disconnected";
+          if (isDetecting) {
+            setTimeout(connectWebSocket, 2000);
+          }
+        };
+
+        ws.onmessage = (event) => {
+          const data = JSON.parse(event.data);
+
+          if (data.status === "paused") {
+            // Handle pause state
+            pauseInfo.style.display = "block";
+            const remaining = Math.ceil(data.remaining);
+            pauseTime.textContent = remaining;
+            result.textContent = "PAUSED: Organic Detected";
+            result.className = "paused";
+
+            // Clear any existing interval
+            if (pauseInterval) clearInterval(pauseInterval);
+
+            // Update countdown every second
+            pauseInterval = setInterval(() => {
+              const newRemaining = Math.ceil(
+                data.resume_time - Date.now() / 1000
+              );
+              if (newRemaining > 0) {
+                pauseTime.textContent = newRemaining;
+              } else {
+                clearInterval(pauseInterval);
+                pauseInfo.style.display = "none";
+              }
+            }, 200);
+
+            return;
+          }
+
+          if (data.status === "resumed") {
+            pauseInfo.style.display = "none";
+            result.className = "";
+            return;
+          }
+
+          // Normal prediction result
+          result.textContent = `Detected: ${data.label} (${(
+            data.confidence * 100
+          ).toFixed(2)}%)`;
+          result.className =
+            data.label === "organic" ? "organic" : "non-organic";
+        };
+      }
+
+      async function startDetection() {
+        try {
+          status.textContent = "Status: Starting camera...";
+          stream = await navigator.mediaDevices.getUserMedia({
+            video: { width: 640, height: 480 },
+          });
+          video.srcObject = stream;
+
+          isDetecting = true;
+          startBtn.textContent = "Stop Detection";
+
+          // Start sending frames
+          detectionInterval = setInterval(() => {
+            if (
+              ws &&
+              ws.readyState === WebSocket.OPEN &&
+              video.readyState === video.HAVE_ENOUGH_DATA
+            ) {
+              ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+              canvas.toBlob(
+                (blob) => {
+                  const reader = new FileReader();
+                  reader.onload = () => {
+                    if (ws.readyState === WebSocket.OPEN) {
+                      ws.send(reader.result);
+                    }
+                  };
+                  reader.readAsDataURL(blob);
+                },
+                "image/jpeg",
+                0.8
+              );
+            }
+          }, 500);
+
+          status.textContent = "Status: Detecting...";
+        } catch (err) {
+          status.textContent = `Error: ${err.message}`;
+          console.error("Camera error:", err);
+        }
+      }
+
+      function stopDetection() {
+        clearInterval(detectionInterval);
+        if (stream) {
+          stream.getTracks().forEach((track) => track.stop());
+          video.srcObject = null;
+        }
+        isDetecting = false;
+        startBtn.textContent = "Start Detection";
+        status.textContent = "Status: Ready";
+      }
+
+      // Initialize
+      startBtn.onclick = () => {
+        if (isDetecting) {
+          stopDetection();
+        } else {
+          connectWebSocket();
+          startDetection();
+        }
+      };
+
+      // Cleanup on page exit
+      window.addEventListener("beforeunload", () => {
+        stopDetection();
+        if (ws) ws.close();
+      });
+    </script>
+  </body>
+</html>
