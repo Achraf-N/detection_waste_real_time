@@ -17,7 +17,7 @@ import asyncio
 app = FastAPI()
 
 # Configuration
-MODEL_PATH = "waste_model"
+MODEL_PATH = "achraf123/waste_model"
 FASTAPI_URL = "https://organic-detection-api-1.onrender.com/api/organic"
 
 MIN_CONFIDENCE = 0.9
